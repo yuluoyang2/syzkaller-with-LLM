@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,7 +68,9 @@ type RemoteConfig struct {
 type Manager interface {
 	MaxSignal() signal.Signal
 	BugFrames() (leaks []string, races []string)
+	// fuzzer 完成机器检查后调用
 	MachineChecked(features flatrpc.Feature, syscalls map[*prog.Syscall]bool) (queue.Source, error)
+	// 获取覆盖率过滤配置
 	CoverageFilter(modules []*vminfo.KernelModule) ([]uint64, error)
 }
 
@@ -75,8 +78,11 @@ type Server interface {
 	Listen() error
 	Close() error
 	Port() int
+	// 分拣语料库
 	TriagedCorpus()
+	// 主服务循环（处理 fuzzer RPC 请求）
 	Serve(context.Context) error
+	// VM 实例生命周期管理
 	CreateInstance(id int, injectExec chan<- bool, updInfo dispatcher.UpdateInfo) chan error
 	ShutdownInstance(id int, crashed bool, extraExecs ...report.ExecutorInfo) ([]ExecRecord, []byte)
 	StopFuzzing(id int)
@@ -189,6 +195,7 @@ func New(cfg *RemoteConfig) (Server, error) {
 	}, cfg.Manager), nil
 }
 
+// 传入 Manager 方法集
 func newImpl(cfg *Config, mgr Manager) *server {
 	// Note that we use VMArch, rather than Arch. We need the kernel address ranges and bitness.
 	sysTarget := targets.Get(cfg.Target.OS, cfg.VMArch)
@@ -239,6 +246,8 @@ var errFatal = errors.New("aborting RPC server")
 
 func (serv *server) Serve(ctx context.Context) error {
 	g, ctx := errgroup.WithContext(ctx)
+	// 接受连接循环,持续监听并接受 fuzzer 的 TCP 连接
+	// 每当有新连接，就调用 serv.handleConn 处理
 	g.Go(func() error {
 		return serv.serv.Serve(ctx, func(ctx context.Context, conn *flatrpc.Conn) error {
 			err := serv.handleConn(ctx, conn)
@@ -249,6 +258,7 @@ func (serv *server) Serve(ctx context.Context) error {
 			return err
 		})
 	})
+	//等待握手并执行机器检查,只跑一次
 	g.Go(func() error {
 		var info *handshakeResult
 		select {
@@ -276,6 +286,10 @@ func authHash(value uint64) uint64 {
 	return hashValue
 }
 
+// 1、Executor 启动并连接 Manager
+// 2、Manager 接受连接请求，进行握手认证，调用 handleConn 处理连接
+// 3、handleConn 使用 FlatRPC Dispatcher 分发消息
+// 4、handleConn 循环读取消息并分发
 func (serv *server) handleConn(ctx context.Context, conn *flatrpc.Conn) error {
 	// Use a random cookie, because we do not want the fuzzer to accidentally guess it and DDoS multiple managers.
 	helloCookie := rand.Uint64()
@@ -283,7 +297,7 @@ func (serv *server) handleConn(ctx context.Context, conn *flatrpc.Conn) error {
 	connectHello := &flatrpc.ConnectHello{
 		Cookie: helloCookie,
 	}
-
+	// 收发握手包
 	if err := flatrpc.Send(conn, connectHello); err != nil {
 		// The other side is not an executor.
 		return fmt.Errorf("failed to establish connection with a remote runner")
@@ -320,7 +334,7 @@ func (serv *server) handleConn(ctx context.Context, conn *flatrpc.Conn) error {
 	if runner == nil {
 		return fmt.Errorf("unknown VM %v tries to connect", id)
 	}
-
+	// 找到 runner 对象,转交真正的 runner 逻辑
 	err = serv.handleRunnerConn(ctx, runner, conn)
 	log.Logf(2, "runner %v: %v", id, err)
 
@@ -328,12 +342,13 @@ func (serv *server) handleConn(ctx context.Context, conn *flatrpc.Conn) error {
 	return nil
 }
 
+// manager 侧每当一个新 runner（VM 进程）连进来时的一站式处理流程
 func (serv *server) handleRunnerConn(ctx context.Context, runner *Runner, conn *flatrpc.Conn) error {
 	opts := &handshakeConfig{
 		VMLess:   serv.cfg.VMLess,
 		Files:    serv.checker.RequiredFiles(),
 		Timeouts: serv.timeouts,
-		Callback: serv.handleMachineInfo,
+		Callback: serv.handleMachineInfo, //解析模块、生成 cover-filter
 	}
 	opts.LeakFrames, opts.RaceFrames = serv.mgr.BugFrames()
 	if serv.checkDone.Load() {
@@ -342,7 +357,8 @@ func (serv *server) handleRunnerConn(ctx context.Context, runner *Runner, conn *
 		opts.Files = append(opts.Files, serv.checker.CheckFiles()...)
 		opts.Features = serv.cfg.Features
 	}
-
+	// 返回的 info 里就带有 cover-filter 和 canonicalizer，runner 后续会用它过滤 coverage。
+	// Runner 与远程 Manager 之间执行“握手”
 	info, err := runner.Handshake(conn, opts)
 	if err != nil {
 		log.Logf(1, "%v", err)
@@ -362,6 +378,7 @@ func (serv *server) handleRunnerConn(ctx context.Context, runner *Runner, conn *
 	return serv.connectionLoop(ctx, runner)
 }
 
+// RPC 服务端在模糊测试与执行器首次连接时
 func (serv *server) handleMachineInfo(infoReq *flatrpc.InfoRequestRawT) (handshakeResult, error) {
 	modules, machineInfo, err := serv.checker.MachineInfo(infoReq.Files)
 	if err != nil {
@@ -370,6 +387,7 @@ func (serv *server) handleMachineInfo(infoReq *flatrpc.InfoRequestRawT) (handsha
 			infoReq.Error = err.Error()
 		}
 	}
+	// 模块地址修正
 	modules = backend.FixModules(serv.cfg.localModules, modules, serv.cfg.pcBase)
 	if infoReq.Error != "" {
 		log.Logf(0, "machine check failed: %v", infoReq.Error)
@@ -380,6 +398,7 @@ func (serv *server) handleMachineInfo(infoReq *flatrpc.InfoRequestRawT) (handsha
 		return handshakeResult{}, errors.New("machine check failed")
 	}
 	var retErr error
+	// 一次性初始化
 	serv.infoOnce.Do(func() {
 		serv.StatModules.Add(len(modules))
 		serv.canonicalModules = cover.NewCanonicalizer(modules, serv.cfg.Cover)
@@ -459,11 +478,12 @@ func (serv *server) runCheck(ctx context.Context, info *handshakeResult) error {
 	if serv.cfg.machineCheckStarted != nil {
 		close(serv.cfg.machineCheckStarted)
 	}
+	// 探测系统调用可用性,探测内核特性,返回结果或错误
 	enabledCalls, disabledCalls, features, checkErr := serv.checker.Run(ctx, info.Files, info.Features)
 	if checkErr == vminfo.ErrAborted {
 		return nil
 	}
-
+	// 某些系统调用依赖其他调用。如果基础调用被禁用，则自动级联禁用相关调用，避免无效测试。
 	enabledCalls, transitivelyDisabled := serv.target.TransitivelyEnabledCalls(enabledCalls)
 	// Note: need to print disbled syscalls before failing due to an error.
 	// This helps to debug "all system calls are disabled".
@@ -475,6 +495,7 @@ func (serv *server) runCheck(ctx context.Context, info *handshakeResult) error {
 	}
 	enabledFeatures := features.Enabled()
 	serv.setupFeatures = features.NeedSetup()
+	// manager 初始化 corpus、fuzzer、队列源
 	newSource, err := serv.mgr.MachineChecked(enabledFeatures, enabledCalls)
 	if err != nil {
 		return err
@@ -555,6 +576,10 @@ func (serv *server) CreateInstance(id int, injectExec chan<- bool, updInfo dispa
 		procs:    serv.cfg.Procs,
 		updInfo:  updInfo,
 		resultCh: make(chan error, 1),
+		// LLM Enabled
+		llmCovFolderPath: "./cov_folder_vm_" + strconv.Itoa(id),
+		fileIndex:        0,
+		llmEnabled:       true,
 	}
 	serv.mu.Lock()
 	defer serv.mu.Unlock()

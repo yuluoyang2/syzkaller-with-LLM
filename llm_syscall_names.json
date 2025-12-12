@@ -1,0 +1,8 @@
+[
+    "openat$hellodev",
+    "read$hellodev",
+    "write$hellodev",
+    "ioctl$DEV_FIFO_CLEAN",
+    "ioctl$DEV_FIFO_GETVALUE",
+    "ioctl$DEV_FIFO_SETVALUE"
+]

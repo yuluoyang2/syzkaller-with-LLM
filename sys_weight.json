@@ -1,0 +1,8 @@
+{
+    "openat$hellodev": 500,
+    "read$hellodev": 300,
+    "write$hellodev": 800,
+    "ioctl$DEV_FIFO_CLEAN": 300,
+    "ioctl$DEV_FIFO_GETVALUE": 300,
+    "ioctl$DEV_FIFO_SETVALUE": 300
+}

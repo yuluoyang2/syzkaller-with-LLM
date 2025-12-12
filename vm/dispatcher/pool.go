@@ -99,6 +99,8 @@ func (p *Pool[T]) waitUnpaused() {
 	}
 }
 
+// 循环逻辑
+// 就是给每个 fuzzer instance 开一个 goroutine，不停循环执行 runInstance()。
 func (p *Pool[T]) Loop(ctx context.Context) {
 	var wg sync.WaitGroup
 	wg.Add(len(p.instances))

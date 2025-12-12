@@ -51,6 +51,7 @@ import (
 	"github.com/google/syzkaller/vm/dispatcher"
 )
 
+// flag 包声明命令行标志
 var (
 	flagConfig = flag.String("config", "", "configuration file")
 	flagDebug  = flag.Bool("debug", false, "dump all VM output to console")
@@ -59,13 +60,15 @@ var (
 	flagTests  = flag.String("tests", "", "prefix to match test file names (for -mode run-tests)")
 )
 
+// 非指针字段 通常是 “值语义”或“嵌入式组件” —— 它们是该结构体“拥有”的、生命周期与之绑定的数据
+// 指针字段 通常是 “引用语义” —— 它们指向外部创建的、共享的、或可替换的对象，
 type Manager struct {
 	cfg             *mgrconfig.Config
 	mode            *Mode
 	vmPool          *vm.Pool
-	pool            *vm.Dispatcher
-	target          *prog.Target
-	sysTarget       *targets.Target
+	pool            *vm.Dispatcher  //高级调度器：在 vmPool 基础上，提供任务分发、负载均衡、快照复用等逻辑。
+	target          *prog.Target    //目标内核架构信息
+	sysTarget       *targets.Target //系统目标调用描述
 	reporter        *report.Reporter
 	crashStore      *manager.CrashStore
 	serv            rpcserver.Server
@@ -114,6 +117,7 @@ type Manager struct {
 	Stats
 }
 
+// 定义Mode 结构体
 type Mode struct {
 	Name                  string
 	Description           string
@@ -125,6 +129,7 @@ type Mode struct {
 	CheckConfig   func(cfg *mgrconfig.Config) error
 }
 
+// 多个预定义的 *Mode 实例
 var (
 	ModeFuzzing = &Mode{
 		Name:         "fuzzing",
@@ -175,7 +180,7 @@ var (
 			return nil
 		},
 	}
-
+	// 将所有模式收集到一个切片 modes 中，便于统一管理和遍历
 	modes = []*Mode{
 		ModeFuzzing,
 		ModeSmokeTest,
@@ -210,11 +215,13 @@ const (
 )
 
 func main() {
+	// 解析参数 更新所有已注册 flag 变量所指向的内存
 	flag.Parse()
 	if !prog.GitRevisionKnown() {
 		log.Fatalf("bad syz-manager build: build with make, run bin/syz-manager")
 	}
 	log.EnableLogCaching(1000, 1<<20)
+	// flag string 返回指针
 	cfg, err := mgrconfig.LoadFile(*flagConfig)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -223,6 +230,7 @@ func main() {
 		// This lets better distinguish logs of individual syz-manager instances.
 		log.SetName(cfg.Name)
 	}
+	// 判断fuzz模式
 	var mode *Mode
 	for _, m := range modes {
 		if *flagMode == m.Name {
@@ -255,6 +263,7 @@ func main() {
 }
 
 func RunManager(mode *Mode, cfg *mgrconfig.Config) {
+	// 创建一个VM池
 	var vmPool *vm.Pool
 	if !cfg.VMLess {
 		var err error
@@ -264,14 +273,14 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 		}
 		defer vmPool.Close()
 	}
-
+	// 工作目录
 	osutil.MkdirAll(cfg.Workdir)
-
+	// 初始化崩溃报告的报告器
 	reporter, err := report.NewReporter(cfg)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-
+	// 初始化了一个manager结构体，包含了管理器的各种配置和状态信息
 	mgr := &Manager{
 		cfg:                cfg,
 		mode:               mode,
@@ -294,37 +303,41 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 	if *flagDebug {
 		mgr.cfg.Procs = 1
 	}
+	// 创建了HTTP服务器 http://127.0.0.1:56741 仪表盘
 	mgr.http = &manager.HTTPServer{
 		// Note that if cfg.HTTP == "", we don't start the server.
 		Cfg:        cfg,
 		StartTime:  time.Now(),
 		CrashStore: mgr.crashStore,
 	}
-
+	//预加载了语料库（corpus）
 	mgr.initStats()
 	if mgr.mode.LoadCorpus {
 		go mgr.preloadCorpus()
 	} else {
 		close(mgr.corpusPreload)
 	}
-
+	// RPC服务器是用来收集测试环境反馈的信息的服务器
 	// Create RPC server for fuzzers.
-	mgr.servStats = rpcserver.NewStats()
+	mgr.servStats = rpcserver.NewStats() //统计对象，用于记录 RPC 层的性能数据
 	rpcCfg := &rpcserver.RemoteConfig{
 		Config:  mgr.cfg,
 		Manager: mgr,
 		Stats:   mgr.servStats,
 		Debug:   *flagDebug,
 	}
-	mgr.serv, err = rpcserver.New(rpcCfg)
+	mgr.serv, err = rpcserver.New(rpcCfg) // 创建 RPC 服务器实例
 	if err != nil {
 		log.Fatalf("failed to create rpc server: %v", err)
 	}
-	if err := mgr.serv.Listen(); err != nil {
+	if err := mgr.serv.Listen(); err != nil { //启动监听
 		log.Fatalf("failed to start rpc server: %v", err)
 	}
+	// 创建关闭上下文，实现 优雅关闭（graceful shutdown
 	ctx := vm.ShutdownCtx()
 	go func() {
+		// 一个goroutine连接循环,持续监听并接受 fuzzer 的 TCP 连接,
+		// 一个等待握手并执行机器检查
 		err := mgr.serv.Serve(ctx)
 		if err != nil {
 			log.Fatalf("%s", err)
@@ -369,8 +382,10 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 		<-vm.Shutdown
 		return
 	}
+	//创建一个 VM 调度器,自动调用 fuzzerInstance 函数在 VM 里启动 fuzzer
 	mgr.pool = vm.NewDispatcher(mgr.vmPool, mgr.fuzzerInstance)
 	mgr.http.Pool = mgr.pool
+	// 启动重现循环
 	reproVMs := max(0, mgr.vmPool.Count()-mgr.cfg.FuzzingVMs)
 	mgr.reproLoop = manager.NewReproLoop(mgr, reproVMs, mgr.cfg.DashboardOnlyRepro)
 	mgr.http.ReproLoop = mgr.reproLoop
@@ -386,6 +401,7 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 	}
 	go mgr.trackUsedFiles()
 	go mgr.processFuzzingResults(ctx)
+	// 启动主循环
 	mgr.pool.Loop(ctx)
 }
 
@@ -576,6 +592,7 @@ func (mgr *Manager) preloadCorpus() {
 }
 
 func (mgr *Manager) loadCorpus(enabledSyscalls map[*prog.Syscall]bool) []fuzzer.Candidate {
+	//对于预加载的种子进行过滤
 	ret := manager.FilterCandidates(<-mgr.corpusPreload, enabledSyscalls, true)
 	if mgr.cfg.PreserveCorpus {
 		for _, hash := range ret.ModifiedHashes {
@@ -589,6 +606,7 @@ func (mgr *Manager) loadCorpus(enabledSyscalls map[*prog.Syscall]bool) []fuzzer.
 	sort.SliceStable(ret.Candidates, func(i, j int) bool {
 		return len(ret.Candidates[i].Prog.Calls) < len(ret.Candidates[j].Prog.Calls)
 	})
+	// 先对初始种子里需要优化的部分做精简,再把精简后的优质片段重组拼接成新的精简用例
 	reminimized := ret.ReminimizeSubset()
 	resmashed := ret.ResmashSubset()
 	log.Logf(0, "%-24v: %v (%v seeds), %d to be reminimized, %d to be resmashed",
@@ -597,6 +615,7 @@ func (mgr *Manager) loadCorpus(enabledSyscalls map[*prog.Syscall]bool) []fuzzer.
 }
 
 func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updInfo dispatcher.UpdateInfo) {
+	// 安全获取 mgr.serv（RPC 服务器)
 	mgr.mu.Lock()
 	serv := mgr.serv
 	mgr.mu.Unlock()
@@ -605,8 +624,9 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 		return
 	}
 	injectExec := make(chan bool, 10)
+	// 向 RPC 服务器注册该 VM 实例，建立管理关系
 	serv.CreateInstance(inst.Index(), injectExec, updInfo)
-
+	// 运行实例核心逻辑
 	reps, vmInfo, err := mgr.runInstanceInner(ctx, inst,
 		vm.WithExitCondition(vm.ExitTimeout),
 		vm.WithInjectExecuting(injectExec),
@@ -624,6 +644,7 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 	if rep != nil && rep.Executor != nil {
 		extraExecs = []report.ExecutorInfo{*rep.Executor}
 	}
+	// 关闭实例并获取最终状态
 	lastExec, machineInfo := serv.ShutdownInstance(inst.Index(), rep != nil, extraExecs...)
 	if rep != nil {
 		rpcserver.PrependExecuting(rep, lastExec)
@@ -646,6 +667,8 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 
 func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opts ...func(*vm.RunOptions),
 ) ([]*report.Report, []byte, error) {
+	// 将 VM 内部的网络端口转发到 host 上 manager 的 RPC 服务端口，
+	// 建立通信隧道。这样 VM 内的 fuzzer 就能连接 host 的 manager。
 	fwdAddr, err := inst.Forward(mgr.serv.Port())
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to setup port forwarding: %w", err)
@@ -655,6 +678,7 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opt
 	// so no need to copy it.
 	executorBin := mgr.sysTarget.ExecutorBin
 	if executorBin == "" {
+		// 复制Fuzz测试程序的二进制文件和执行器的二进制文件到虚拟机实例中
 		executorBin, err = inst.Copy(mgr.cfg.ExecutorBin)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to copy binary: %w", err)
@@ -663,7 +687,8 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opt
 
 	// Run the fuzzer binary.
 	start := time.Now()
-
+	// 构建 fuzzer 启动命令
+	// ./syz-executor runner 0 127.0.0.1 端口
 	host, port, err := net.SplitHostPort(fwdAddr)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse manager's address")
@@ -671,6 +696,7 @@ func (mgr *Manager) runInstanceInner(ctx context.Context, inst *vm.Instance, opt
 	cmd := fmt.Sprintf("%v runner %v %v %v", executorBin, inst.Index(), host, port)
 	ctxTimeout, cancel := context.WithTimeout(ctx, mgr.cfg.Timeouts.VMRunningTime)
 	defer cancel()
+	// 运行 fuzzer 并监控
 	_, reps, err := inst.Run(ctxTimeout, mgr.reporter, cmd, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to run fuzzer: %w", err)
@@ -1042,6 +1068,7 @@ func (mgr *Manager) minimizeCorpusLocked() {
 	if currSize <= mgr.lastMinCorpus*103/100 {
 		return
 	}
+	// 控制是否基于真实覆盖信号（如kcov覆盖的内核路径）进行最小化
 	mgr.corpus.Minimize(mgr.cfg.Cover)
 	newSize := mgr.corpus.StatProgs.Val()
 
@@ -1114,6 +1141,7 @@ func (mgr *Manager) BugFrames() (leaks, races []string) {
 	return
 }
 
+// 只跑一次
 func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 	enabledSyscalls map[*prog.Syscall]bool) (queue.Source, error) {
 	if len(enabledSyscalls) == 0 {
@@ -1153,6 +1181,7 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 	statSyscalls := stat.New("syscalls", "Number of enabled syscalls",
 		stat.Simple, stat.NoGraph, stat.Link("/syscalls"))
 	statSyscalls.Add(len(enabledSyscalls))
+	// 从 corpus.db 读取历史测试用例，但只保留与当前启用调用兼容的程序。
 	candidates := mgr.loadCorpus(enabledSyscalls)
 	mgr.setPhaseLocked(phaseLoadedCorpus)
 	opts := fuzzer.DefaultExecOpts(mgr.cfg, features, *flagDebug)
@@ -1304,6 +1333,7 @@ func (mgr *Manager) fuzzerLoop(fuzzer *fuzzer.Fuzzer) {
 	for ; ; time.Sleep(time.Second / 2) {
 		if mgr.cfg.Cover && !mgr.cfg.Snapshot {
 			// Distribute new max signal over all instances.
+			// 分发覆盖率信号到所有 VM
 			newSignal := fuzzer.Cover.GrabSignalDelta()
 			if len(newSignal) != 0 {
 				log.Logf(3, "distributing %d new signal", len(newSignal))
@@ -1343,8 +1373,7 @@ func (mgr *Manager) setPhaseLocked(newPhase int) {
 	if mgr.phase == newPhase {
 		panic("repeated phase update")
 	}
-	// In VMLess mode, mgr.reproLoop is nil.
-	if newPhase == phaseTriagedHub && mgr.reproLoop != nil {
+	if newPhase == phaseTriagedHub {
 		// Start reproductions.
 		go mgr.reproLoop.Loop(vm.ShutdownCtx())
 	}
@@ -1480,12 +1509,15 @@ func (mgr *Manager) dashboardReproTasks() {
 }
 
 func (mgr *Manager) CoverageFilter(modules []*vminfo.KernelModule) ([]uint64, error) {
+	// reportGenerator 是用于生成崩溃报告、符号化解析、覆盖率映射等的核心组件
+	// 建立地址 ↔ 符号的映射
 	mgr.reportGenerator.Init(modules)
 	filters, err := manager.PrepareCoverageFilters(mgr.reportGenerator, mgr.cfg, true)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init coverage filter: %w", err)
 	}
 	mgr.coverFilters = filters
+	// 更新 HTTP 服务中的覆盖率信息
 	mgr.http.Cover.Store(&manager.CoverageInfo{
 		Modules:         modules,
 		ReportGenerator: mgr.reportGenerator,

@@ -34,6 +34,7 @@ type Seeds struct {
 func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 	var info Seeds
 	var err error
+	// 加载工作目录中的语料库
 	info.CorpusDB, err = db.Open(filepath.Join(cfg.Workdir, "corpus.db"), !immutable)
 	if err != nil {
 		if info.CorpusDB == nil {
@@ -41,10 +42,12 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 		}
 		log.Errorf("read %v inputs from corpus and got error: %v", len(info.CorpusDB.Records), err)
 	}
+	// Fresh 字段判断是不是全新的语料库
 	info.Fresh = len(info.CorpusDB.Records) == 0
 	corpusFlags := versionToFlags(info.CorpusDB.Version)
 	outputs := make(chan *input, 32)
 	chErr := make(chan error, 1)
+	// 启动一个 goroutine 异步读取数据库
 	go func() {
 		chErr <- readInputs(cfg, info.CorpusDB, outputs)
 		close(outputs)
@@ -58,9 +61,11 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 		if inp.Prog == nil {
 			if inp.IsSeed {
 				if errors.Is(inp.Err, ErrSkippedTest) {
+					// 如果是被故意跳过的，增加 skippedSeeds
 					skippedSeeds++
 					log.Logf(2, "seed %s is skipped: %s", inp.Path, inp.Err)
 				} else {
+					// 如果是损坏的，增加 brokenSeeds
 					brokenSeeds++
 					log.Logf(0, "seed %s is broken: %s", inp.Path, inp.Err)
 				}
@@ -78,6 +83,7 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 			// b/c they are tried on every start anyway.
 			flags = fuzzer.ProgMinimized
 		}
+		// 将有效的程序添加到 candidates 列表，作为 fuzzing 的候选程序
 		candidates = append(candidates, fuzzer.Candidate{
 			Prog:  inp.Prog,
 			Flags: flags,
@@ -129,6 +135,7 @@ func readInputs(cfg *mgrconfig.Config, db *db.DB, output chan *input) error {
 		go func() {
 			defer wg.Done()
 			for inp := range inputs {
+				// 判断是否跳过（skip）或者反序列化失败（broken）
 				inp.Prog, inp.Err = ParseSeed(cfg.Target, inp.Data)
 				output <- inp
 			}
@@ -272,6 +279,7 @@ func parseProg(target *prog.Target, data []byte, mode prog.DeserializeMode, reqs
 	// Need to check requirements early, as some programs may fail to deserialize
 	// on some arches due to missing syscalls. We also do not want to parse tests
 	// that are marked as 'manual'.
+	// 且与当前目标架构不匹配,种子要求的功能（kvm, net 等）未在当前配置中启用
 	if !checkArch(properties, target.Arch) || !MatchRequirements(properties, reqs) {
 		var pairs []string
 		for k, v := range properties {
@@ -279,6 +287,7 @@ func parseProg(target *prog.Target, data []byte, mode prog.DeserializeMode, reqs
 		}
 		return nil, properties, fmt.Errorf("%w: %s", ErrSkippedTest, strings.Join(pairs, ", "))
 	}
+	// 反序列化
 	p, err := target.Deserialize(data, mode)
 	if err != nil {
 		return nil, nil, err

@@ -8,7 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,6 +56,11 @@ type Runner struct {
 	conn        *flatrpc.Conn
 	stopped     bool
 	machineInfo []byte
+
+	// llm coverage feedback
+	llmCovFolderPath string
+	fileIndex        int
+	llmEnabled       bool
 }
 
 type runnerStats struct {
@@ -390,6 +399,7 @@ func (runner *Runner) handleExecutingMessage(msg *flatrpc.ExecutingMessage) erro
 	return nil
 }
 
+// 负责将从 VM 或 executor 返回的原始执行信息转换为 fuzzer 可理解的格式，并通知上层任务完成。
 func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 	req := runner.requests[msg.Id]
 	if req == nil {
@@ -449,7 +459,7 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 		}
 		runner.hanged[msg.Id] = true
 	}
-	req.Done(&queue.Result{
+	res := &queue.Result{
 		Executor: queue.ExecutorID{
 			VM:   runner.id,
 			Proc: int(msg.Proc),
@@ -458,7 +468,44 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 		Info:   msg.Info,
 		Output: slices.Clone(msg.Output),
 		Err:    resErr,
-	})
+	}
+	printed := false
+	outputFolder := runner.llmCovFolderPath
+	fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".txt")
+	if file, err := os.Create(fileName); err == nil {
+		defer file.Close()
+		os.Chmod(fileName, 0644)
+		if res.Info != nil {
+			first := true
+			for i, c := range res.Info.Calls {
+				if len(c.Cover) > 0 {
+					if !first {
+						file.WriteString("\n")
+					}
+					first = false
+
+					var argNames []string
+					for _, arg := range req.Prog.Calls[i].Meta.Args {
+						argNames = append(argNames, arg.Name)
+					}
+					argsStr := strings.Join(argNames, ", ")
+					// Use Fprintf instead of WriteString + Sprintf
+					fmt.Fprintf(file, "%s(%s)\n", req.Prog.Calls[i].Meta.Name, argsStr)
+					for _, cover := range c.Cover {
+						fmt.Fprintf(file, "%x\n", cover)
+					}
+					printed = true
+				}
+			}
+		}
+		if printed {
+			runner.fileIndex++
+		}
+		if runner.fileIndex%500 == 0 && runner.fileIndex != 0 && printed {
+			runner.ProcessCovRawFileByLLM()
+		}
+	}
+	req.Done(res)
 	return nil
 }
 
@@ -627,4 +674,59 @@ func addFallbackSignal(p *prog.Prog, info *flatrpc.ProgInfo) {
 	for i, inf := range callInfos {
 		info.Calls[i].Signal = inf.Signal
 	}
+}
+
+func (runner *Runner) ProcessCovRawFileByLLM() {
+	folder := runner.llmCovFolderPath
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		log.Logf(1, "failed to read cov folder %v: %v", folder, err)
+		return
+	}
+	hit_num := 0
+	bounded_str := "not"
+	for _, item := range entries {
+		if item.IsDir() || !strings.HasSuffix(item.Name(), ".txt") {
+			continue
+		}
+
+		filePath := filepath.Join(folder, item.Name())
+		cmd := exec.Command("python3", "./scripts/process_cov_raw.py", filePath, bounded_str)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Logf(1, "script failed for %v: %v, output: %s", filePath, err, out)
+			continue
+		}
+
+		if strings.Contains(string(out), "XXXXX REACH") {
+			log.Logf(0, "XXXXX REACH in %v", item.Name())
+			hit_num++
+			if hit_num == 5 {
+				bounded_str = "bounded"
+			}
+		}
+	}
+
+	log.Logf(0, "Hit times: %d", hit_num)
+
+	// === 安全清理所有 .txt 文件 ===
+	for _, item := range entries {
+		if !item.IsDir() && strings.HasSuffix(item.Name(), ".txt") {
+			filePath := filepath.Join(folder, item.Name())
+			if err := os.Remove(filePath); err != nil {
+				log.Logf(1, "failed to remove %v: %v", filePath, err)
+			}
+		}
+	}
+
+	// // === 触发 LLM 聚合分析 ===
+	// if hit_num != 0 && runner.llmEnabled {
+	// 	llmCmd := exec.Command("python3", "./scripts/process_close_cov_result.py")
+	// 	log.Logf(0, "Running LLM analysis: %v", llmCmd.Args)
+	// 	output, err := llmCmd.CombinedOutput()
+	// 	log.Logf(0, "LLM analysis output:\n%s", output)
+	// 	if err != nil {
+	// 		log.Logf(1, "LLM analysis failed: %v", err)
+	// 	}
+	// }
 }

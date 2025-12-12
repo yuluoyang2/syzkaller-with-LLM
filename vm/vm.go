@@ -40,13 +40,15 @@ import (
 	_ "github.com/google/syzkaller/vm/proxyapp"
 	_ "github.com/google/syzkaller/vm/qemu"
 	_ "github.com/google/syzkaller/vm/starnix"
-	_ "github.com/google/syzkaller/vm/virtualbox"
 	_ "github.com/google/syzkaller/vm/vmm"
 	_ "github.com/google/syzkaller/vm/vmware"
 )
 
+// 虚拟机资源池
 type Pool struct {
-	impl               vmimpl.Pool
+	// vm具体的实现方法 count create
+	impl vmimpl.Pool
+	// qemu 标识vm类型
 	typ                vmimpl.Type
 	workdir            string
 	template           string
@@ -58,8 +60,11 @@ type Pool struct {
 	statOutputReceived *stat.Val
 }
 
+// 单个虚拟机实例
 type Instance struct {
-	pool          *Pool
+	// 反向引用：指向所属的 Pool
+	pool *Pool
+	// 虚拟机实例的具体方法
 	impl          vmimpl.Instance
 	workdir       string
 	index         int
@@ -304,7 +309,7 @@ func (inst *Instance) Run(ctx context.Context, reporter *report.Reporter, comman
 	for _, opt := range opts {
 		opt(runOptions)
 	}
-
+	// 调用 VM 后端实现（inst.impl）在虚拟机中执行命令
 	outc, errc, err := inst.impl.Run(ctx, command)
 	if err != nil {
 		return nil, nil, err
@@ -317,6 +322,7 @@ func (inst *Instance) Run(ctx context.Context, reporter *report.Reporter, comman
 		reporter:        reporter,
 		lastExecuteTime: time.Now(),
 	}
+	// 监控执行并收集报告
 	reps := mon.monitorExecution()
 	return mon.output, reps, nil
 }

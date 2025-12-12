@@ -132,10 +132,15 @@ func compileRegexps(regexpStrings []string) ([]*regexp.Regexp, error) {
 }
 
 type CoverageFilters struct {
-	Areas          []corpus.FocusArea
-	ExecutorFilter map[uint64]struct{}
+	Areas          []corpus.FocusArea  //多个聚焦区域
+	ExecutorFilter map[uint64]struct{} //所有需要被 KCOV 追踪的 PC 合集(用于过滤执行器覆盖率)
 }
 
+// KCOV 的插桩代码会占用内核的地址空间
+// KCOV 运行时用于存储 PC 的缓冲区不占用内核地址空间
+// 将这个过滤器转换为一组原始 PC 地址
+// KCOV记录的是“下一条将要执行的指令地址”
+// 对每个原始 PC 计算下一条指令地址，并用这个 next 作为 KCOV 实际会上报的地址来构建过滤器。
 func PrepareCoverageFilters(source *ReportGeneratorWrapper, cfg *mgrconfig.Config,
 	strict bool) (CoverageFilters, error) {
 	var ret CoverageFilters
