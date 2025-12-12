@@ -470,7 +470,15 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 		Err:    resErr,
 	}
 	printed := false
+	// 确保输出目录存在
 	outputFolder := runner.llmCovFolderPath
+	if err := os.MkdirAll(outputFolder, 0755); err != nil {
+		log.Logf(1, "Failed to create coverage output folder %q: %v", outputFolder, err)
+		// 即使目录创建失败，也应通知上层任务完成，避免卡住
+		req.Done(res)
+		return nil
+	}
+
 	fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".txt")
 	if file, err := os.Create(fileName); err == nil {
 		defer file.Close()
