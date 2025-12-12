@@ -6,6 +6,7 @@ package fuzzer
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
 	"runtime"
 	"sort"
@@ -39,9 +40,15 @@ type Fuzzer struct {
 	ctMu         sync.Mutex // TODO: use RWLock.
 	ctRegenerate chan struct{}
 
+	// SyzLLM added
+	llmEnabled            bool
+	llm_comm_sig_file     string
+	llm_comm_content_file string
+
 	execQueues
 }
 
+// 机器检查后创建fuzzobj
 func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 	target *prog.Target) *Fuzzer {
 	if cfg.NewInputFilter == nil {
@@ -62,9 +69,15 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		// We're okay to lose some of the messages -- if we are already
 		// regenerating the table, we don't want to repeat it right away.
 		ctRegenerate: make(chan struct{}),
+		// SyzLLM added
+		llmEnabled:            true,
+		llm_comm_sig_file:     "/home/lab420/xuwencong/syzkaller/syz_comm_sig.txt",
+		llm_comm_content_file: "/home/lab420/xuwencong/syzkaller/syz_comm_content.txt",
 	}
 	f.execQueues = newExecQueues(f)
+	// 根据当前语料库生成 系统调用选择概率表
 	f.updateChoiceTable(nil)
+	// 后台 goroutine 监听 ctRegenerate 事件，动态调整选择表（当语料库新增/删除程序时）
 	go f.choiceTableUpdater()
 	if cfg.Debug {
 		go f.logCurrentStats()
@@ -382,6 +395,7 @@ func (fuzzer *Fuzzer) rand() *rand.Rand {
 }
 
 func (fuzzer *Fuzzer) updateChoiceTable(programs []*prog.Prog) {
+	//  构建新选择表
 	newCt := fuzzer.target.BuildChoiceTable(programs, fuzzer.Config.EnabledCalls)
 
 	fuzzer.ctMu.Lock()
@@ -399,7 +413,26 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 			return
 		case <-fuzzer.ctRegenerate:
 		}
-		fuzzer.updateChoiceTable(fuzzer.Config.Corpus.Programs())
+		llmEnabled := fuzzer.llmEnabled
+		if llmEnabled {
+			fuzzer.updateChoiceTableWithLLM(fuzzer.Config.Corpus.Programs())
+			continue
+		} else {
+			fuzzer.updateChoiceTable(fuzzer.Config.Corpus.Programs())
+		}
+	}
+}
+
+func (fuzzer *Fuzzer) updateChoiceTableWithLLM(programs []*prog.Prog) {
+	log.Output(0, "update choice table with LLM")
+	fuzzer.Logf(0, "UpdateChoiceTable using LLM comm content")
+	newCt := fuzzer.target.BuildChoiceTableWithLLM(programs, fuzzer.Config.EnabledCalls)
+
+	fuzzer.ctMu.Lock()
+	defer fuzzer.ctMu.Unlock()
+	if len(programs) >= fuzzer.ctProgs {
+		fuzzer.ctProgs = len(programs)
+		fuzzer.ct = newCt
 	}
 }
 
