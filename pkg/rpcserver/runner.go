@@ -5,6 +5,7 @@ package rpcserver
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -479,35 +480,45 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 		return nil
 	}
 
-	fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".txt")
+	fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".json")
 	if file, err := os.Create(fileName); err == nil {
 		defer file.Close()
 		os.Chmod(fileName, 0644)
+		type CallCoverage struct {
+			Syscall string   `json:"syscall"`
+			Args    []string `json:"args"`
+			Cover   []string `json:"cover"`
+		}
+		var records []CallCoverage
 		if res.Info != nil {
-			first := true
 			for i, c := range res.Info.Calls {
 				if len(c.Cover) > 0 {
-					if !first {
-						file.WriteString("\n")
-					}
-					first = false
-
 					var argNames []string
 					for _, arg := range req.Prog.Calls[i].Meta.Args {
 						argNames = append(argNames, arg.Name)
 					}
-					argsStr := strings.Join(argNames, ", ")
-					// Use Fprintf instead of WriteString + Sprintf
-					fmt.Fprintf(file, "%s(%s)\n", req.Prog.Calls[i].Meta.Name, argsStr)
-					for _, cover := range c.Cover {
-						fmt.Fprintf(file, "%x\n", cover)
+					coverHex := make([]string, len(c.Cover))
+					for j, cov := range c.Cover {
+						coverHex[j] = fmt.Sprintf("%x", cov)
 					}
+
+					records = append(records, CallCoverage{
+						Syscall: req.Prog.Calls[i].Meta.Name,
+						Args:    argNames,
+						Cover:   coverHex,
+					})
 					printed = true
 				}
 			}
 		}
 		if printed {
-			runner.fileIndex++
+			encoder := json.NewEncoder(file)
+			encoder.SetIndent("", "  ")
+			if encodeErr := encoder.Encode(records); encodeErr != nil {
+				log.Logf(1, "Failed to encode coverage to JSON %q: %v", fileName, encodeErr)
+			} else {
+				runner.fileIndex++
+			}
 		}
 		if runner.fileIndex%500 == 0 && runner.fileIndex != 0 && printed {
 			runner.ProcessCovRawFileByLLM()
@@ -694,7 +705,7 @@ func (runner *Runner) ProcessCovRawFileByLLM() {
 	hit_num := 0
 	bounded_str := "not"
 	for _, item := range entries {
-		if item.IsDir() || !strings.HasSuffix(item.Name(), ".txt") {
+		if item.IsDir() || !strings.HasSuffix(item.Name(), ".json") {
 			continue
 		}
 
@@ -717,9 +728,8 @@ func (runner *Runner) ProcessCovRawFileByLLM() {
 
 	log.Logf(0, "Hit times: %d", hit_num)
 
-	// === 安全清理所有 .txt 文件 ===
 	for _, item := range entries {
-		if !item.IsDir() && strings.HasSuffix(item.Name(), ".txt") {
+		if !item.IsDir() && strings.HasSuffix(item.Name(), ".json") {
 			filePath := filepath.Join(folder, item.Name())
 			if err := os.Remove(filePath); err != nil {
 				log.Logf(1, "failed to remove %v: %v", filePath, err)
@@ -727,14 +737,14 @@ func (runner *Runner) ProcessCovRawFileByLLM() {
 		}
 	}
 
-	// // === 触发 LLM 聚合分析 ===
-	// if hit_num != 0 && runner.llmEnabled {
-	// 	llmCmd := exec.Command("python3", "./scripts/process_close_cov_result.py")
-	// 	log.Logf(0, "Running LLM analysis: %v", llmCmd.Args)
-	// 	output, err := llmCmd.CombinedOutput()
-	// 	log.Logf(0, "LLM analysis output:\n%s", output)
-	// 	if err != nil {
-	// 		log.Logf(1, "LLM analysis failed: %v", err)
-	// 	}
-	// }
+	// === 触发 LLM 聚合分析 ===
+	if hit_num != 0 && runner.llmEnabled {
+		llmCmd := exec.Command("python3", "./scripts/process_close_cov_result.py")
+		log.Logf(0, "Running LLM analysis: %v", llmCmd.Args)
+		output, err := llmCmd.CombinedOutput()
+		log.Logf(0, "LLM analysis output:\n%s", output)
+		if err != nil {
+			log.Logf(1, "LLM analysis failed: %v", err)
+		}
+	}
 }

@@ -24,7 +24,7 @@ def parse_func2addr_info():
         ffffffff816a6500
         ffffffff816a65a5
     """
-    func2addr_path = project_root / "line2addr" / "func2addr_info.txt"
+    func2addr_path = project_root / "Address" / "func2addr_info.txt"
 
     if not func2addr_path.exists():
         print(f"Warning: {func2addr_path} not found. Skipping function info parsing.")
