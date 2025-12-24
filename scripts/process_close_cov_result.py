@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-
+#process_close_cov_result.py
 from pathlib import Path
 import json
-
-# 假设该脚本位于 syzkaller/ 目录下，project_root 是其父目录
+import os
+from openai import OpenAI
+from dotenv import load_dotenv
 project_root = Path.cwd().parent.parent
+load_dotenv(project_root / ".env")
+API_KEY = os.getenv("QWEN_API_KEY")
+client = OpenAI(
+    api_key=API_KEY,
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+)
+
 
 def main():
     # Step 1: 加载地址 -> 源码信息映射
@@ -122,6 +130,35 @@ def main():
         f.write(prompt)
     print(f"LLM prompt written to {prompt_output_path}")
 
-
+    # Step 4: 与大模型交互获得推荐的系统调用名称
+    response = client.chat.completions.create(
+        model="qwen3-max",
+        temperature=0.3,  # 分析任务用低温度更准确
+        max_tokens=2048,   # 预留足够空间
+        messages=[
+            {'role': 'system', 'content': '你是Linux内核专家,精通系统调用与调用图分析'},
+            {'role': 'user', 'content': prompt},
+        ],
+    )
+    full_response = response.choices[0].message.content.strip()
+        
+    # 解析JSON
+    json_str = full_response.strip()
+    if json_str.startswith("```json"):
+        json_str = json_str[7:].strip()
+    if json_str.endswith("```"):
+        json_str = json_str[:-3].strip()
+    syscall_list = json.loads(json_str)
+        
+    if not isinstance(syscall_list, list):
+        raise ValueError("返回的不是列表格式")
+    tmp = project_root / "syzkaller" / "llm_syscall_names.json.tmp"
+    final = project_root / "syzkaller" / "llm_syscall_names.json"
+    # 原子写
+    with open(tmp, "w") as f:
+        json.dump(syscall_list, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, final)
 if __name__ == "__main__":
     main()
