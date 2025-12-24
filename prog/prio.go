@@ -424,6 +424,8 @@ func loadLLMSyscallNames(path string) []string {
 	return result
 }
 
+// 读取推荐的权重函数
+
 func (target *Target) BuildChoiceTableWithLLM(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
 	log.Logf(0, "Build Choice Table with LLM")
 	llmFedNames := loadLLMSyscallNames("/home/lab420/xuwencong/syzkaller/llm_syscall_names.json")

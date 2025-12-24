@@ -5,6 +5,10 @@
 *.img
 workdir*
 
+*.jsonl
+*.json
+*.txt
+
 bin/
 dashboard/app/config_prod.go
 
