@@ -42,23 +42,27 @@ def main():
     if not cov_path.exists():
         return []
     results = []
-    with open(cov_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
+    try:
+        with open(cov_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
 
-            rec = json.loads(line)
-            calls = rec.get("call_sequence", [])
-            for addr in rec.get("covered_close_points", []):
-                if addr in close_addr2funcname_and_filepath:
-                    fp, fn, src = close_addr2funcname_and_filepath[addr].split('\n', 2)
-                    results.append({
-                        "call_sequence": calls,
-                        "filepath": fp,
-                        "function": fn,
-                        "source_code": [src]  
-                    })
+                rec = json.loads(line)
+                calls = rec.get("call_sequence", [])
+                for addr in rec.get("covered_close_points", []):
+                    if addr in close_addr2funcname_and_filepath:
+                        fp, fn, src = close_addr2funcname_and_filepath[addr].split('\n', 2)
+                        results.append({
+                            "call_sequence": calls,
+                            "filepath": fp,
+                            "function": fn,
+                            "source_code": [src]  
+                        })
+    except Exception as e:
+        print(f"Skipping invalid coverage file {cov_path}: {e}")
+        return []
     # 合并相同上下文的源码行
     merged = {}
     for item in results:

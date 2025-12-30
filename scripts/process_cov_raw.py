@@ -17,8 +17,8 @@ def main():
     is_under_bound = "bound" not in bounded_str
 
     # 加载目标函数地址集合
-    addr_file = project_root / "workdir" / "result_addr_info.txt"
-    close_func_addr = set()
+    addr_file = project_root/"workdir"/"result_addr_info.txt"
+
     with open(addr_file, "r") as f:
         close_func_addr = {line.strip() for line in f if line.strip()}
 
