@@ -3,7 +3,7 @@
 from argparse import ArgumentParser
 import json
 from pathlib import Path
-
+project_root = Path(__file__).resolve().parent.parent.parent
 def main():
 
     args = ArgumentParser(description="Process coverage data for close function calls.")
@@ -17,8 +17,8 @@ def main():
     is_under_bound = "bound" not in bounded_str
 
     # 加载目标函数地址集合
-    addr_file = Path("../../workdir/result_addr_info.txt")
-
+    addr_file = project_root / "workdir" / "result_addr_info.txt"
+    close_func_addr = set()
     with open(addr_file, "r") as f:
         close_func_addr = {line.strip() for line in f if line.strip()}
 

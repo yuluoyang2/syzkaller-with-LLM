@@ -473,7 +473,7 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 	printed := false
 	// 确保输出目录存在
 	outputFolder := runner.llmCovFolderPath
-	if err := os.MkdirAll(outputFolder, 0755); err != nil {
+	if err := os.MkdirAll(outputFolder, 0777); err != nil {
 		log.Logf(1, "Failed to create coverage output folder %q: %v", outputFolder, err)
 		// 即使目录创建失败，也应通知上层任务完成，避免卡住
 		req.Done(res)
@@ -483,7 +483,7 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 	fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".json")
 	if file, err := os.Create(fileName); err == nil {
 		defer file.Close()
-		os.Chmod(fileName, 0644)
+		os.Chmod(fileName, 0777)
 		type CallCoverage struct {
 			Syscall string   `json:"syscall"`
 			Args    []string `json:"args"`

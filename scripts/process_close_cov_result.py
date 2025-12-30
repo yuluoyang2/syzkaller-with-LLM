@@ -5,7 +5,7 @@ import json
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
-project_root = Path.cwd().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 load_dotenv(project_root / ".env")
 API_KEY = os.getenv("QWEN_API_KEY")
 client = OpenAI(
