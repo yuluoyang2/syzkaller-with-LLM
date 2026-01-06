@@ -47,11 +47,11 @@ def main():
     if total_close_points and is_under_bound:
         result_entry = {
             "call_sequence": call_sequences,
-            "covered_close_points": total_close_points
+            "covered_close_points": list(total_close_points)
         }
 
         # 追加到 .jsonl 文件
-        with open("close_cov_results.jsonl", "a") as f:
+        with open("./close_cov_results.jsonl", "a") as f:
             f.write(json.dumps(result_entry, ensure_ascii=False) + "\n")
 
         print("write hit cov:", ", ".join(total_close_points))

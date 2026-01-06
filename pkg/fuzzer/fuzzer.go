@@ -41,9 +41,7 @@ type Fuzzer struct {
 	ctRegenerate chan struct{}
 
 	// SyzLLM added
-	llmEnabled            bool
-	llm_comm_sig_file     string
-	llm_comm_content_file string
+	llmEnabled bool
 
 	execQueues
 }
@@ -70,9 +68,7 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		// regenerating the table, we don't want to repeat it right away.
 		ctRegenerate: make(chan struct{}),
 		// SyzLLM added
-		llmEnabled:            true,
-		llm_comm_sig_file:     "/home/lab420/xuwencong/syzkaller/syz_comm_sig.txt",
-		llm_comm_content_file: "/home/lab420/xuwencong/syzkaller/syz_comm_content.txt",
+		llmEnabled: true,
 	}
 	f.execQueues = newExecQueues(f)
 	// 根据当前语料库生成 系统调用选择概率表
@@ -414,9 +410,9 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 		case <-fuzzer.ctRegenerate:
 		}
 		llmEnabled := fuzzer.llmEnabled
-		if llmEnabled {
+		if llmEnabled == true {
 			fuzzer.updateChoiceTableWithLLM(fuzzer.Config.Corpus.Programs())
-			continue
+			// continue
 		} else {
 			fuzzer.updateChoiceTable(fuzzer.Config.Corpus.Programs())
 		}
@@ -425,7 +421,7 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 
 func (fuzzer *Fuzzer) updateChoiceTableWithLLM(programs []*prog.Prog) {
 	log.Output(0, "update choice table with LLM")
-	fuzzer.Logf(0, "UpdateChoiceTable using LLM comm content")
+	// fuzzer.Logf(0, "UpdateChoiceTable using LLM comm content")
 	newCt := fuzzer.target.BuildChoiceTableWithLLM(programs, fuzzer.Config.EnabledCalls)
 
 	fuzzer.ctMu.Lock()

@@ -11,9 +11,6 @@ import (
 	"os"
 	"slices"
 	"sort"
-	"strings"
-
-	"github.com/google/syzkaller/pkg/log"
 )
 
 // Calulation of call-to-call priorities.
@@ -85,30 +82,44 @@ func (target *Target) CalculatePrioritiesWithLLMBias(corpus []*Prog, biased_indi
 	return static, enabled
 }
 
-// 可能需要修改的函数
 func (target *Target) calcLLMResultPrio(biased_indices map[int]bool, enabled map[*Syscall]bool) [][]int32 {
 
-	prios := make([][]int32, len(target.Syscalls))
+	n := len(target.Syscalls)
+	prios := make([][]int32, n)
 	for i := range prios {
-		prios[i] = make([]int32, len(target.Syscalls))
+		prios[i] = make([]int32, n)
 	}
 
-	for i := 0; i < len(target.Syscalls); i++ {
-		sc_i := target.Syscalls[i]
-		if !enabled[sc_i] {
-			continue // 跳过 disabled
+	// 为被偏好的 syscall 对分配更高的优先级
+	const (
+		LLM_TO_LLM   int32 = 50 // LLM 推荐的 syscall 之间的优先级
+		NORM_TO_LLM  int32 = 20 // 普通 syscall 到 LLM 推荐 syscall 的优先级
+		LLM_TO_NORM  int32 = 10 // LLM 推荐 syscall 到普通 syscall 的优先级
+		NORM_TO_NORM int32 = 0  // 普通 syscall 之间的优先级
+	)
+	for i, syscall_i := range target.Syscalls {
+		if !enabled[syscall_i] {
+			continue
 		}
-		if biased_indices[i] {
-			for j, sc_j := range target.Syscalls {
-				if enabled[sc_j] {
-					prios[i][j] = 1
-				}
+		iBiased := biased_indices[i]
+		for j, syscall_j := range target.Syscalls {
+			if !enabled[syscall_j] {
+				continue
 			}
-		} else {
-			for j, sc_j := range target.Syscalls {
-				if enabled[sc_j] && biased_indices[j] {
-					prios[i][j] = 1
-				}
+			jBiased := biased_indices[j]
+			switch {
+			// LLM 子空间内强收敛
+			case iBiased && jBiased:
+				prios[i][j] = LLM_TO_LLM
+			// 普通 syscall 向 LLM syscall 拉拢
+			case !iBiased && jBiased:
+				prios[i][j] = NORM_TO_LLM
+			// LLM syscall 允许跳出子空间，防止早熟
+			case iBiased && !jBiased:
+				prios[i][j] = LLM_TO_NORM
+			// 普通 → 普通：不加 bias
+			default:
+				// prios[i][j] = 0
 			}
 		}
 	}
@@ -327,37 +338,37 @@ type ChoiceTable struct {
 }
 
 // 读取你的 syscall 权重文件(JSON 格式)
-// func loadCustomSyscallWeights(path string) map[string]int {
-// 	weights := make(map[string]int)
+func loadCustomSyscallWeights(path string) map[string]int {
+	weights := make(map[string]int)
 
-// 	data, err := os.ReadFile(path)
-// 	if err != nil {
-// 		// 文件不存在或读取错误，返回空 map
-// 		return weights
-// 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// 文件不存在或读取错误，返回空 map
+		return weights
+	}
 
-// 	// 尝试解析 JSON：
-// 	// 格式应该是：
-// 	// {
-// 	//     "openat$hellodev": 500,
-// 	//     "read$hellodev": 300,
-// 	//     ...
-// 	// }
-// 	err = json.Unmarshal(data, &weights)
-// 	if err != nil {
-// 		// JSON 格式不正确，则返回空 map
-// 		// 你也可以加 log.Logf 提醒一下
-// 		return map[string]int{}
-// 	}
+	// 尝试解析 JSON：
+	// 格式应该是：
+	// {
+	//     "openat$hellodev": 500,
+	//     "read$hellodev": 300,
+	//     ...
+	// }
+	err = json.Unmarshal(data, &weights)
+	if err != nil {
+		// JSON 格式不正确，则返回空 map
+		// 你也可以加 log.Logf 提醒一下
+		return map[string]int{}
+	}
 
-// 	return weights
-// }
+	return weights
+}
 
 func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
 	// 计算转移优先级 二维矩阵 prios[i][j]
 	prios, enabledCalls := target.CalculatePriorities(corpus, enabled)
 	// ====== ↓↓↓ 你的自定义加权逻辑 ↓↓↓ ======
-	// extraWeights := loadCustomSyscallWeights("/home/lab420/xuwencong/syzkaller/sys_weight.json")
+	// extraWeights := loadCustomSyscallWeights("/home/lab420/Documents/demo/syzkaller/sys_weight.json")
 
 	// for i := range prios {
 	// 	for j, call := range target.Syscalls {
@@ -369,7 +380,7 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 	// 		}
 	// 	}
 	// }
-	// log.Logf(0, "[WeightPatch] applied custom syscall weights")
+	// log.Logf(0, "Add syscall weights successfully.")
 
 	// ====== ↑↑↑ 你的自定义加权逻辑 ↑↑↑ ======
 	var generatableCalls []*Syscall
@@ -427,16 +438,13 @@ func loadLLMSyscallNames(path string) []string {
 // 读取推荐的权重函数
 
 func (target *Target) BuildChoiceTableWithLLM(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
-	log.Logf(0, "Build Choice Table with LLM")
+	// log.Logf(0, "Build Choice Table with LLM")
 	llmFedNames := loadLLMSyscallNames("/home/lab420/xuwencong/syzkaller/llm_syscall_names.json")
 	llmFedNameIds := make(map[int]bool)
 	for i, c := range target.Syscalls {
 		syscallName := c.Name
-		for _, llmName := range llmFedNames {
-			if strings.Contains(syscallName, llmName) {
-				llmFedNameIds[i] = true
-				break
-			}
+		if slices.Contains(llmFedNames, syscallName) {
+			llmFedNameIds[i] = true
 		}
 	}
 	prios, enabledCalls := target.CalculatePrioritiesWithLLMBias(corpus, llmFedNameIds, enabled)

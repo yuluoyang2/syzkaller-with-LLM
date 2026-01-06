@@ -470,58 +470,60 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 		Output: slices.Clone(msg.Output),
 		Err:    resErr,
 	}
-	printed := false
-	// 确保输出目录存在
-	outputFolder := runner.llmCovFolderPath
-	if err := os.MkdirAll(outputFolder, 0777); err != nil {
-		log.Logf(1, "Failed to create coverage output folder %q: %v", outputFolder, err)
-		// 即使目录创建失败，也应通知上层任务完成，避免卡住
-		req.Done(res)
-		return nil
-	}
-
-	fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".json")
-	if file, err := os.Create(fileName); err == nil {
-		defer file.Close()
-		os.Chmod(fileName, 0777)
-		type CallCoverage struct {
-			Syscall string   `json:"syscall"`
-			Args    []string `json:"args"`
-			Cover   []string `json:"cover"`
+	if runner.llmEnabled == true {
+		printed := false
+		// 确保输出目录存在
+		outputFolder := runner.llmCovFolderPath
+		if err := os.MkdirAll(outputFolder, 0777); err != nil {
+			log.Logf(1, "Failed to create coverage output folder %q: %v", outputFolder, err)
+			// 即使目录创建失败，也应通知上层任务完成，避免卡住
+			req.Done(res)
+			return nil
 		}
-		var records []CallCoverage
-		if res.Info != nil {
-			for i, c := range res.Info.Calls {
-				if len(c.Cover) > 0 {
-					var argNames []string
-					for _, arg := range req.Prog.Calls[i].Meta.Args {
-						argNames = append(argNames, arg.Name)
-					}
-					coverHex := make([]string, len(c.Cover))
-					for j, cov := range c.Cover {
-						coverHex[j] = fmt.Sprintf("%x", cov)
-					}
 
-					records = append(records, CallCoverage{
-						Syscall: req.Prog.Calls[i].Meta.Name,
-						Args:    argNames,
-						Cover:   coverHex,
-					})
-					printed = true
+		fileName := filepath.Join(outputFolder, "cov_file_"+strconv.Itoa(runner.fileIndex)+".json")
+		if file, err := os.Create(fileName); err == nil {
+			defer file.Close()
+			os.Chmod(fileName, 0777)
+			type CallCoverage struct {
+				Syscall string   `json:"syscall"`
+				Args    []string `json:"args"`
+				Cover   []string `json:"cover"`
+			}
+			var records []CallCoverage
+			if res.Info != nil {
+				for i, c := range res.Info.Calls {
+					if len(c.Cover) > 0 {
+						var argNames []string
+						for _, arg := range req.Prog.Calls[i].Meta.Args {
+							argNames = append(argNames, arg.Name)
+						}
+						coverHex := make([]string, len(c.Cover))
+						for j, cov := range c.Cover {
+							coverHex[j] = fmt.Sprintf("%x", cov)
+						}
+
+						records = append(records, CallCoverage{
+							Syscall: req.Prog.Calls[i].Meta.Name,
+							Args:    argNames,
+							Cover:   coverHex,
+						})
+						printed = true
+					}
 				}
 			}
-		}
-		if printed {
-			encoder := json.NewEncoder(file)
-			encoder.SetIndent("", "  ")
-			if encodeErr := encoder.Encode(records); encodeErr != nil {
-				log.Logf(1, "Failed to encode coverage to JSON %q: %v", fileName, encodeErr)
-			} else {
-				runner.fileIndex++
+			if printed {
+				encoder := json.NewEncoder(file)
+				encoder.SetIndent("", "  ")
+				if encodeErr := encoder.Encode(records); encodeErr != nil {
+					log.Logf(1, "Failed to encode coverage to JSON %q: %v", fileName, encodeErr)
+				} else {
+					runner.fileIndex++
+				}
 			}
-		}
-		if runner.fileIndex%500 == 0 && runner.fileIndex != 0 && printed {
-			runner.ProcessCovRawFileByLLM()
+			if runner.fileIndex%500 == 0 && runner.fileIndex != 0 && printed {
+				runner.ProcessCovRawFileByLLM()
+			}
 		}
 	}
 	req.Done(res)
@@ -698,6 +700,7 @@ func addFallbackSignal(p *prog.Prog, info *flatrpc.ProgInfo) {
 func (runner *Runner) ProcessCovRawFileByLLM() {
 	folder := runner.llmCovFolderPath
 	entries, err := os.ReadDir(folder)
+	// log.Logf(0, "folder is %v", folder)
 	if err != nil {
 		log.Logf(1, "failed to read cov folder %v: %v", folder, err)
 		return
@@ -711,6 +714,7 @@ func (runner *Runner) ProcessCovRawFileByLLM() {
 
 		filePath := filepath.Join(folder, item.Name())
 		cmd := exec.Command("python3", "./scripts/process_cov_raw.py", filePath, bounded_str)
+		// log.Logf(0, "python3 ./scripts/process_cov_raw.py %v %v", filePath, bounded_str)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			log.Logf(1, "script failed for %v: %v, output: %s", filePath, err, out)
@@ -738,13 +742,13 @@ func (runner *Runner) ProcessCovRawFileByLLM() {
 	}
 
 	// === 触发 LLM 聚合分析 ===
-	if hit_num != 0 && runner.llmEnabled {
-		llmCmd := exec.Command("python3", "./scripts/process_close_cov_result.py")
-		log.Logf(0, "Running LLM analysis: %v", llmCmd.Args)
-		output, err := llmCmd.CombinedOutput()
-		log.Logf(0, "LLM analysis output:\n%s", output)
-		if err != nil {
-			log.Logf(1, "LLM analysis failed: %v", err)
-		}
-	}
+	// if hit_num != 0 {
+	// 	llmCmd := exec.Command("python3", "./scripts/process_close_cov_result.py")
+	// 	log.Logf(0, "Running LLM analysis: %v", llmCmd.Args)
+	// 	output, err := llmCmd.CombinedOutput()
+	// 	log.Logf(0, "LLM analysis output:\n%s", output)
+	// 	if err != nil {
+	// 		log.Logf(1, "LLM analysis failed: %v", err)
+	// 	}
+	// }
 }
