@@ -6,7 +6,6 @@ package fuzzer
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/rand"
 	"runtime"
 	"sort"
@@ -420,7 +419,7 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 }
 
 func (fuzzer *Fuzzer) updateChoiceTableWithLLM(programs []*prog.Prog) {
-	log.Output(0, "update choice table with LLM")
+	// log.Output(0, "update choice table with LLM")
 	// fuzzer.Logf(0, "UpdateChoiceTable using LLM comm content")
 	newCt := fuzzer.target.BuildChoiceTableWithLLM(programs, fuzzer.Config.EnabledCalls)
 

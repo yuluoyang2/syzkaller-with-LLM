@@ -49,9 +49,9 @@ def main():
             "call_sequence": call_sequences,
             "covered_close_points": list(total_close_points)
         }
-
+        output_path = project_root/"syzkaller"/"scripts"/"close_cov_results.jsonl"
         # 追加到 .jsonl 文件
-        with open("./close_cov_results.jsonl", "a") as f:
+        with open(output_path, "a") as f:
             f.write(json.dumps(result_entry, ensure_ascii=False) + "\n")
 
         print("write hit cov:", ", ".join(total_close_points))

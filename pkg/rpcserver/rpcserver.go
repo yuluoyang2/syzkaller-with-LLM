@@ -579,7 +579,7 @@ func (serv *server) CreateInstance(id int, injectExec chan<- bool, updInfo dispa
 		// LLM Enabled
 		llmCovFolderPath: "./cov_folder_vm_" + strconv.Itoa(id),
 		fileIndex:        0,
-		llmEnabled:       true,
+		llmEnabled:       false,
 	}
 	serv.mu.Lock()
 	defer serv.mu.Unlock()

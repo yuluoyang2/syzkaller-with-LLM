@@ -88,7 +88,8 @@ def main():
 
     merged_results = list(merged.values())
     # 保存结果到 JSON 文件
-    with open("./close_cov_result_with_source.json", "w") as f:
+    output_path = project_root / "syzkaller" / "scripts" / "close_cov_result_with_source.json"
+    with open(output_path, "w") as f:
         json.dump(merged_results, f, indent=2, ensure_ascii=False)
 
 

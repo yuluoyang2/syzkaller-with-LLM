@@ -6,6 +6,7 @@ package prog
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -439,7 +440,12 @@ func loadLLMSyscallNames(path string) []string {
 
 func (target *Target) BuildChoiceTableWithLLM(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
 	// log.Logf(0, "Build Choice Table with LLM")
-	llmFedNames := loadLLMSyscallNames("/home/lab420/xuwencong/syzkaller/llm_syscall_names.json")
+	log.Output(0, "update choice table with LLM")
+	// hello
+	// llmFedNames := loadLLMSyscallNames("/home/lab420/xuwencong/syzkaller/llm_syscall_names.json")
+	// testing
+	llmFedNames := loadLLMSyscallNames("/home/lab420/Documents/demo/syzkaller/llm_syscall_names.json")
+	log.Output(0, fmt.Sprintf("LLM fed syscall names: %v", llmFedNames))
 	llmFedNameIds := make(map[int]bool)
 	for i, c := range target.Syscalls {
 		syscallName := c.Name
